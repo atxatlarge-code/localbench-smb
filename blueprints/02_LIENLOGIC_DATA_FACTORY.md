@@ -1,4 +1,4 @@
-# 🏛️ SMB AI Blueprint #1: LienLogic — The Zero-Marginal-Cost Public Record & Lead Factory
+# SMB AI Blueprint #1: LienLogic — The Zero-Marginal-Cost Public Record & Lead Factory
 
 **Vertical**: Real Estate Investment, Title Intelligence, PropTech & B2B Lead Agencies  
 **Architecture Pattern**: **The Centaur Protocol ("Cloud Finds, Local Builds") + 4-Tier Apple Silicon Metal Pipeline**  

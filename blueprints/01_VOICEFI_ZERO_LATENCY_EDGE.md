@@ -1,4 +1,4 @@
-# ⚡ SMB AI Blueprint #3: VoiceFi — Reclaiming the "15-Hour Latency Tax" with On-Device Voice & Agent Operations
+# SMB AI Blueprint #3: VoiceFi — Reclaiming the "15-Hour Latency Tax" with On-Device Voice & Agent Operations
 
 **Vertical**: Software Agencies, Executive Operations, Healthcare/Legal Dictation & Multi-Agent Engineering Teams  
 **Architecture Pattern**: **0ms Offline Neural Audio + Direct-on-Metal MLX (`:9379`) + Harmony Harness Verified Autonomy**  

@@ -1,4 +1,4 @@
-# 🗄️ SMB AI Blueprint #4: Vault — Local Markdown & SQLite FTS5 Second-Brain Q&A (`127.0.0.1`)
+# SMB AI Blueprint #4: Vault — Local Markdown & SQLite FTS5 Second-Brain Q&A (`127.0.0.1`)
 
 **Vertical**: Law Firms, Agencies, Consultancies, Medical Practices & Executive Operations  
 **Architecture Pattern**: **Plain-Text Markdown (`.md`) + In-Memory `SQLite FTS5` + Local JSON Extraction**  

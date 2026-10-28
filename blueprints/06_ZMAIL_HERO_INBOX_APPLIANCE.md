@@ -1,4 +1,4 @@
-# 📬 SMB AI Blueprint #2: Zmail Hero — The 90/10 Local-First Email Triage & Draft Appliance
+# SMB AI Blueprint #2: Zmail Hero — The 90/10 Local-First Email Triage & Draft Appliance
 
 **Vertical**: Horizontal SMB Operations (Agencies, Legal/Accounting Practices, Executive Teams, Property Management)  
 **Architecture Pattern**: **90/10 Complexity Router + Sub-2ms SQLite WAL Triage + One-Breath HITL Staging**  

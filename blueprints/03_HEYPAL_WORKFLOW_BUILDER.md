@@ -1,4 +1,4 @@
-# 🛠️ SMB AI Blueprint #3: Hey Pal — Local Workflow Builder & Verified Code Synthesis (`127.0.0.1`)
+# SMB AI Blueprint #3: Hey Pal — Local Workflow Builder & Verified Code Synthesis (`127.0.0.1`)
 
 **Vertical**: Agencies, Software Shops, Consultants & Sovereign Desktop Operators  
 **Architecture Pattern**: **"Map Once with AI, Execute in Code" + 3-Stage Deterministic AST SecGate**  

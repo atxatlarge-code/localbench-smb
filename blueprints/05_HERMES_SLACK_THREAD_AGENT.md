@@ -1,4 +1,4 @@
-# 💬 SMB AI Blueprint #5: Hermes — Zero-MCP Slack Thread Ops & Pre-Flight Policy Gate
+# SMB AI Blueprint #5: Hermes — Zero-MCP Slack Thread Ops & Pre-Flight Policy Gate
 
 **Vertical**: B2B Data Delivery, Client Services, Underwriting Ops & Engineering Agencies  
 **Architecture Pattern**: **Zero-MCP REST Thread Mapping (`thread_ts`) + Defect Taxonomy Triage + Deterministic Outbound Policy Gate**  
