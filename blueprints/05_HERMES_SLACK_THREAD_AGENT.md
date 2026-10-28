@@ -1,8 +1,8 @@
-# SMB AI Blueprint #5: Hermes — Zero-MCP Slack Thread Ops & Pre-Flight Policy Gate
+# SMB AI Blueprint #5: Hermes - Zero-MCP Slack Thread Ops & Pre-Flight Policy Gate
 
 **Vertical**: B2B Data Delivery, Client Services, Underwriting Ops & Engineering Agencies  
 **Architecture Pattern**: **Zero-MCP REST Thread Mapping (`thread_ts`) + Defect Taxonomy Triage + Deterministic Outbound Policy Gate**  
-**Hardware Reference**: Apple Silicon Mac (16 GB – 64 GB Unified Memory, Metal GPU)  
+**Hardware Reference**: Apple Silicon Mac (16 GB - 64 GB Unified Memory, Metal GPU)  
 **Replaces Cloud Tax**: Bloated 30-Tool Slack MCP Context Overhead + Manual Client Review Triage
 
 ---
@@ -10,9 +10,9 @@
 ## 1. The SMB Business Problem ("Slack Thread Chaos & Outbound Policy Slips")
 
 While Email (`Zmail Hero`) handles external vendors and asynchronous correspondence, high-velocity B2B client delivery and internal operations happen inside **Slack threads**. Yet connecting cloud AI agents to Slack creates three major operational failures:
-1. **The 30-Tool MCP Token Tax**: Injecting a standard Slack MCP server (with 25–40 tool schemas for channels, users, reactions, canvases, and search) into an LLM prompt burns **4,000 to 8,000 input tokens on every single turn** before the model even reads a message.
+1. **The 30-Tool MCP Token Tax**: Injecting a standard Slack MCP server (with 25-40 tool schemas for channels, users, reactions, canvases, and search) into an LLM prompt burns **4,000 to 8,000 input tokens on every single turn** before the model even reads a message.
 2. **Thread Drift & Lost Action Items**: When a client reviewer or QA bot posts a `HOLD` or `SWAP_REQUESTED` inside a project thread (flagging specific record IDs or data discrepancies), standard chat bots lose track of which `thread_ts` maps to which client order.
-3. **Outbound Policy & Typography Violations**: Left unchecked, LLMs reply in client Slack channels using telltale AI punctuation (em-dashes `—`), unverified legal/marketing claims (`"high equity"`, `"fast close"`), or broken `@username` strings that fail to trigger real Slack `<@U...>` notifications.
+3. **Outbound Policy & Typography Violations**: Left unchecked, LLMs reply in client Slack channels using telltale AI punctuation (em-dashes ` - `), unverified legal/marketing claims (`"high equity"`, `"fast close"`), or broken `@username` strings that fail to trigger real Slack `<@U...>` notifications.
 
 ---
 
@@ -29,7 +29,7 @@ While Email (`Zmail Hero`) handles external vendors and asynchronous corresponde
                                            │
                                            ▼
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
-│         STAGE 2: LOCAL DEFECT TAXONOMY & TRIAGE (<1.0s on 1.5B–8B Metal)            │
+│         STAGE 2: LOCAL DEFECT TAXONOMY & TRIAGE (<1.0s on 1.5B-8B Metal)            │
 │  • Parses inbound QA review message into structured JSON:                           │
 │      - `decision`: "HOLD" | "SWAP_REQUESTED" | "APPROVED"                           │
 │      - `defect_category`: "DRIFT" | "ENTITY_USE" | "SITUS_GEOMETRY" | "FORMULA"     │
@@ -40,7 +40,7 @@ While Email (`Zmail Hero`) handles external vendors and asynchronous corresponde
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
 │       STAGE 3: PRE-FLIGHT POLICY & MENTION HYGIENE GATE (hermes_nfe_auditor.py)     │
 │  • Rewrites plain `@Reviewer` strings into active `<@U0BGM4V8SG7>` Slack IDs        │
-│  • Blocks outbound message if it contains prohibited em-dashes (`—` / `–`) or       │
+│  • Blocks outbound message if it contains prohibited em-dashes (` - ` / `-`) or       │
 │    unverified marketing claims (`"high equity"`, `"fast close"`, `"zero lawsuits"`) │
 └─────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -55,8 +55,8 @@ Across the **LocalBench SMB v1.0** `05_hermes_slack` track (parsing a Denton Cou
 | :--- | :---: | :---: | :---: | :---: |
 | **`dolphin-llama3:8b`** *(Llama 3 8B)* | **100%** | **1.52s** | 51.4 tok/s | **~6,000 tokens/turn** |
 | **`gemma2:2b`** *(Google Gemma 2)* | **100%** | **0.81s** | 114.5 tok/s | **~6,000 tokens/turn** |
-| **`voicefi-coder-mlx`** *(1.5B Metal LoRA)* | **80%–100%** | **0.88s** | **158.1 tok/s** | **~6,000 tokens/turn** |
-| **`voicefi-coder:1.5b`** *(KV-Pinned)* | **80%–100%** | **0.94s** | **176.5 tok/s** | **~6,000 tokens/turn** |
+| **`voicefi-coder-mlx`** *(1.5B Metal LoRA)* | **80%-100%** | **0.88s** | **158.1 tok/s** | **~6,000 tokens/turn** |
+| **`voicefi-coder:1.5b`** *(KV-Pinned)* | **80%-100%** | **0.94s** | **176.5 tok/s** | **~6,000 tokens/turn** |
 
 ---
 

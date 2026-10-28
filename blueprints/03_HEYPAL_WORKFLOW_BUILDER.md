@@ -1,38 +1,47 @@
-# SMB AI Blueprint #3: Hey Pal — Local Workflow Builder & Verified Code Synthesis (`127.0.0.1`)
+# SMB AI Blueprint #3: Hey Pal - Recording & Automating Multi-App File Delivery (Slack, Local Files, Google Drive & Sheets)
 
-**Vertical**: Agencies, Software Shops, Consultants & Sovereign Desktop Operators  
-**Architecture Pattern**: **"Map Once with AI, Execute in Code" + 3-Stage Deterministic AST SecGate**  
-**Hardware Reference**: Apple Silicon Mac (16 GB – 64 GB Unified Memory, Metal GPU)  
-**Bind Address**: `127.0.0.1` (`0.0 KB/s` External Egress)
+**Vertical**: B2B Data Providers, Operations Teams, Agencies & Sovereign Desktop Operators  
+**Architecture Pattern**: **"Record Process Once, Automate in Deterministic Code" + 3-Stage AST SecGate**  
+**Hardware Reference**: Apple Silicon Mac (16 GB - 64 GB Unified Memory, Metal GPU)  
+**Bind Address**: `127.0.0.1` (`0.0 KB/s` External Egress for Code Synthesis)
 
 ---
 
-## 1. The SMB Business Problem ("Rented Copilots & Unverified Agent Edits")
+## 1. The SMB Business Problem ("Manual Multi-App File Delivery vs. Fragile Browser Agents")
 
-When small teams and operators automate repetitive business workflows (parsing vendor CSVs, calculating commissions, syncing databases), they hit two walls with cloud AI coding wrappers:
-1. **Per-Seat SaaS Rent & IP Exposure**: Paying $20–$200/seat/month for cloud coding wrappers that stream proprietary business logic and internal schemas to third-party servers.
-2. **Brittle Edits & "Reward Hacking"**: Generic LLMs frequently rewrite entire files, fail on edge-case inputs (such as division-by-zero or negative balances), or silently delete existing unit test assertions so the test suite appears to pass.
+In real SMB operations, delivering a completed client order requires touching four different systems in sequence:
+1. Checking **Slack** for QA approval (`QA decision: APPROVED`).
+2. Locating and renaming the approved local deliverable file (`APPROVED <OrderID> - <Client> - <County>.csv`) on **local disk**.
+3. Uploading the clean CSV into the client's shared folder on **Google Drive**.
+4. Finding the matching order row in the operations tracker on **Google Sheets**, writing the delivered filename to the completion column, and marking the database registry `DELIVERED`.
+
+When teams try to automate this with cloud browser-use agents, the agent costs tokens on every single run, takes 3-5 minutes clicking UI buttons, and breaks whenever a window loses focus.
 
 ---
 
 ## 2. The Local AI Solution Architecture (`Hey Pal` Track #3)
 
-**Hey Pal** (`Track #3`) runs 100% locally on `127.0.0.1`, pairing a KV-pinned or Direct-on-Metal `1.5B` coding model with a **3-Stage Deterministic AST Security Gate**:
+With **Hey Pal**, we recorded the manual LienLogic file delivery process once and used our local coding stack to synthesize and maintain a 100% deterministic, headless Python delivery pipeline (`deliver_dfpb.py` + `autonomous_delivery_handoff.py`):
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
-│             STAGE 1: SURGICAL SEARCH/REPLACE SYNTHESIS (127.0.0.1)                  │
-│  • Direct-on-Metal 1.5B model (`voicefi-coder-mlx`) or KV-pinned `1.5B` Ollama      │
-│  • Emits exact SEARCH/REPLACE diff blocks in 0.74s–0.87s at 168–183 tok/s           │
+│        PHASE 1: RECORD PROCESS ONCE -> SYNTHESIZE IN CODE (Hey Pal Track #3)        │
+│  * Operator records the manual Slack -> Finder -> Drive -> Sheets delivery workflow │
+│  * Direct-on-Metal 1.5B (`voicefi-coder-mlx`) synthesizes and patches surgical      │
+│    Python automation in 0.74s (verified by 3-Stage AST & Assertion SecGate)         │
 └──────────────────────────────────────────┬──────────────────────────────────────────┘
                                            │
                                            ▼
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
-│               STAGE 2: 3-STAGE ZERO-LLM AST & BOUNDARY SECGATE                      │
-│  1. Syntax & Patch Gate: Applies diff cleanly and verifies `ast.parse()`            │
-│  2. Anti-Reward-Hacking Gate: Counts parent vs. candidate AST `assert` nodes        │
-│     (`2/2` preserved) so an agent can never pass tests by deleting assertions       │
-│  3. Hidden Boundary Oracle: Executes unit tests + negative/zero edge-case probes    │
+│          PHASE 2: HEADLESS 2-SECOND EXECUTION ACROSS 4 SYSTEMS ($0.00/RUN)          │
+│  1. Slack Gate (`autonomous_delivery_handoff.py`):                                  │
+│     Detects `QA decision: APPROVED` in the order's Slack review thread              │
+│  2. Local File Resolution (`deliver_dfpb.py`):                                      │
+│     Resolves `APPROVED <ID>.csv` on local disk and normalizes client filename       │
+│  3. Google Drive REST API v3 (`upload_file_to_drive`):                              │
+│     Uploads/updates the CSV directly into the Shared Drive folder (0 UI clicks)     │
+│  4. Google Sheets REST API v4 + PostgreSQL Registry:                                │
+│     Writes the delivered filename stem to Column J / Completed tab & logs DB        │
 └─────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -40,16 +49,17 @@ When small teams and operators automate repetitive business workflows (parsing v
 
 ## 3. Production Receipts & LocalBench SMB v1.0 Performance
 
-| Model | Track #3: `Hey Pal` Score | Synthesis Latency | Throughput | Assertions Preserved |
-| :--- | :---: | :---: | :---: | :---: |
-| **`voicefi-coder-mlx`** *(1.5B Metal LoRA)* | **100%** | **0.74s** | **168.7 tok/s** | `2/2` (`100%` SecGate) |
-| **`voicefi-coder:1.5b`** *(KV-Pinned)* | **100%** | **0.87s** | **183.3 tok/s** | `2/2` (`100%` SecGate) |
-| **`llama3.2:1b`** *(1.2B Edge)* | **100%** | **0.90s** | **158.4 tok/s** | `2/2` (`100%` SecGate) |
+| Metric / Model | Manual / Cloud Browser Agent | Hey Pal Local Code Pipeline | Business Impact |
+| :--- | :---: | :---: | :--- |
+| **End-to-End Order Delivery Time** | 5 - 10 Minutes (Manual / UI Clicking) | **~2.0 Seconds** (`deliver_dfpb.py`) | **150x Faster Order Fulfillment** |
+| **Per-Delivery Cloud AI Token Cost** | $0.50 - $2.00 per browser agent run | **$0.00** (Headless REST APIs) | **100% Margin Retention** |
+| **`voicefi-coder-mlx` (1.5B Metal)** | N/A | **100% Track #3 Score (`0.74s`)** | `2/2` AST assertions preserved |
+| **`voicefi-coder:1.5b` (KV-Pinned)** | N/A | **100% Track #3 Score (`0.87s`)** | `2/2` AST assertions preserved |
 
 ---
 
-## 4. The 3 Repeatable Rules for Local Workflow Automation
+## 4. The 3 Repeatable Rules for Multi-App SMB Automation
 
-1. **Map Once with AI, Execute in Deterministic Code**: Never pay an LLM to filter 50,000 rows inside a prompt. Have **Hey Pal** write a verified Python function in `0.74s`, and let Python process the 50,000 rows in milliseconds for $0.00.
-2. **Use Surgical `SEARCH/REPLACE` Blocks, Not Full-File Rewrites**: Constraining a `1.5B` local model to surgical diff blocks cuts generation latency under 1 second and prevents accidental code deletion.
-3. **Enforce AST Assertion Counting**: Always verify `candidate_assertions >= parent_assertions` via Python's `ast` module before accepting any autonomous code edit.
+1. **Record the Workflow Once, Run It in Headless REST**: Never pay a cloud vision model to click Google Drive and Google Sheets buttons 50 times a week. Record the workflow once, synthesize a direct Python REST script (`Drive v3` + `Sheets v4` + `Slack REST`), and execute it in 2 seconds for $0.00.
+2. **Use Surgical `SEARCH/REPLACE` Diffs for Workflow Updates**: When a sheet column or filename rule changes, a local `1.5B` model (`voicefi-coder-mlx`) updates the exact function in `0.74 seconds` without rewriting the rest of the script.
+3. **Enforce a 3-Stage AST SecGate on All Code Edits**: Before any automated workflow change is committed, verify `ast.parse()`, confirm `candidate_assertions >= parent_assertions` (`2/2`), and run negative-input boundary probes so the pipeline never silently breaks.

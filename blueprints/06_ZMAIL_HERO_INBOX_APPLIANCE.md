@@ -1,8 +1,8 @@
-# SMB AI Blueprint #2: Zmail Hero — The 90/10 Local-First Email Triage & Draft Appliance
+# SMB AI Blueprint #2: Zmail Hero - The 90/10 Local-First Email Triage & Draft Appliance
 
 **Vertical**: Horizontal SMB Operations (Agencies, Legal/Accounting Practices, Executive Teams, Property Management)  
 **Architecture Pattern**: **90/10 Complexity Router + Sub-2ms SQLite WAL Triage + One-Breath HITL Staging**  
-**Hardware Reference**: Apple Silicon Mac (16 GB – 64 GB Unified Memory)  
+**Hardware Reference**: Apple Silicon Mac (16 GB - 64 GB Unified Memory)  
 **Primary Repos**: `Zmail Hero` • `workflows/muse_tools.py`
 
 ---
@@ -10,7 +10,7 @@
 ## 1. The SMB Business Problem ("Inbox Overload vs. Cloud Privacy & Token Bleed")
 
 Every small business drowns in email: vendor invoices, client status checks, scheduling threads, newsletters, and contract redlines. Yet SMBs face two roadblocks with cloud-only AI email tools:
-1. **Unacceptable Per-Seat SaaS & Token Costs**: Paying \$30/user/month—or burning frontier API tokens on every newsletter, receipt, and 2-line status email across a 25-person company—costs \$9,000+/year mostly to classify noise.
+1. **Unacceptable Per-Seat SaaS & Token Costs**: Paying \$30/user/month - or burning frontier API tokens on every newsletter, receipt, and 2-line status email across a 25-person company - costs \$9,000+/year mostly to classify noise.
 2. **Confidentiality & PII Exposure**: Law firms, medical offices, financial advisors, and dealmakers cannot stream their entire historical SQLite mail archive (`384 MB+` of client threads) to third-party cloud APIs without violating client confidentiality or compliance policies.
 3. **Rate-Limit Throttling on Backlogs**: Cloud email workers require artificial `500ms+` sleep throttles between emails to avoid `HTTP 429` rate limits, turning an inbox backlog sync into a multi-hour crawl.
 
@@ -36,7 +36,7 @@ Zmail Hero implements a **90/10 Local-First Hybrid Router** (`Zmail Hero/ai.js`)
 ┌────────────────────────────────────────────┐   ┌────────────────────────────────────┐
 │     TIER 1: 100% LOCAL METAL INFERENCE     │   │    TIER 2: FRONTIER CLOUD ESCALATION│
 │  • Model: voicefi-coder:1.5b / gemma2:2b   │   │  • Model: Gemini 2.5 Flash         │
-│  • Speed: 120–183 tok/s (~0.4s/email)      │   │  • Handles multi-page contracts &  │
+│  • Speed: 120-183 tok/s (~0.4s/email)      │   │  • Handles multi-page contracts &  │
 │  • Output: Strict JSON (summary, category, │   │    15-message legal redline threads│
 │    urgency, replySuggestions)              │   │  • Cost: Only 10% of inbox volume  │
 │  • Cost: $0.00 | Zero External Egress      │   └────────────────────────────────────┘

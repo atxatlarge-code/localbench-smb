@@ -1,8 +1,8 @@
-# SMB AI Blueprint #4: Vault — Local Markdown & SQLite FTS5 Second-Brain Q&A (`127.0.0.1`)
+# SMB AI Blueprint #4: Vault - Local Markdown & SQLite FTS5 Second-Brain Q&A (`127.0.0.1`)
 
 **Vertical**: Law Firms, Agencies, Consultancies, Medical Practices & Executive Operations  
 **Architecture Pattern**: **Plain-Text Markdown (`.md`) + In-Memory `SQLite FTS5` + Local JSON Extraction**  
-**Hardware Reference**: Apple Silicon Mac (8 GB – 64 GB Unified Memory)  
+**Hardware Reference**: Apple Silicon Mac (8 GB - 64 GB Unified Memory)  
 **Fires Cloud Tax**: $30/seat/mo Cloud "Second Brain" & Knowledge Base SaaS Wrappers (Notion AI, Mem, Reflect Cloud)
 
 ---
@@ -36,8 +36,8 @@ Every SMB accumulates critical institutional knowledge across client agreements,
                                            │
                                            ▼
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
-│           STAGE 2: LOCAL FACT EXTRACTION & DRAFT RESOLUTION (0.38s–0.42s)           │
-│  • Local 1.5B–8B model reads top FTS5 matches, discards superseded September draft  │
+│           STAGE 2: LOCAL FACT EXTRACTION & DRAFT RESOLUTION (0.38s-0.42s)           │
+│  • Local 1.5B-8B model reads top FTS5 matches, discards superseded September draft  │
 │  • Emits verified JSON: {"active_note": "...signed.md", "monthly_retainer_usd":     │
 │    4800, "response_sla_minutes": 15, "contact": "Sarah Chen"}                       │
 └─────────────────────────────────────────────────────────────────────────────────────┘
