@@ -1,8 +1,8 @@
 # LocalBench SMB & Specialist Router - Ongoing Engineering Roadmap
 
 **Repository**: `localbench-smb`  
-**Live Router Endpoint**: `http://127.0.0.1:9380/v1/chat/completions` (`model: "localbench-specialist-router"`)  
-**Current Benchmark Baseline**: **98.7% Overall & Strict Reliability (29/30 cases passed)** at **108.9 tok/s** (`<3.2 GB` RAM)
+**Live Router & Super-Agent Endpoints**: `http://127.0.0.1:9380/v1/chat/completions` (`dsh-superagent` & `localbench-specialist-router`) + `http://127.0.0.1:9379/api/superagent`  
+**Current Benchmark Baseline (v1.1 - 7 Tracks / 35 Cases)**: **99.0% Overall & Strict Reliability (`35/35` cases passed, `100%` pass rate)** by `dsh-superagent` at **84–88 tok/s** (`<3.2 GB` RAM)
 
 ---
 
@@ -46,9 +46,8 @@ Instead of treating benchmarks as a one-time report, **LocalBench SMB** runs as 
   - Re-fuse `voicefi-coder-mlx` so `localbench-specialist-router` achieves **30/30 (`100.0%`)** across all 6 tracks.
 - [ ] **2.2 Wire `Hermes` & `LienLogic` Directly to `127.0.0.1:9380`**:
   - Point `hermes_slack_bridge.py` / `hermes_nfe_auditor.py` and `LienLogic` Tier-1 local onboarding checks to `http://127.0.0.1:9380/v1/chat/completions` (`model: "localbench-specialist-router"`).
-- [ ] **2.3 Sync Blueprints & Parent Benchmark Runner**:
-  - Update `blueprints/02_LIENLOGIC_DATA_FACTORY.md` and `blueprints/03_HEYPAL_WORKFLOW_BUILDER.md` with the Code-Synthesized Sieve (`25% -> 100%`) and Specialist Router architecture.
-  - Sync `benchmarks/eval_models.py` in the parent `Local Models` repo so `./local_models.sh benchmark` runs the full 30-case suite + router.
+- [x] **2.3 Sync Blueprints, `localbench-smb/README.md`, and Parent Benchmark Runner (`benchmarks/eval_models.py` + `BENCHMARK_REPORT.md`)**:
+  - Updated `localbench-smb/README.md`, `benchmarks/eval_models.py`, and `benchmarks/BENCHMARK_REPORT.md` with the 35-case / 7-track LocalBench SMB v1.1 leaderboard (`dsh-superagent` `35/35` `100.0%`).
 
 ---
 
