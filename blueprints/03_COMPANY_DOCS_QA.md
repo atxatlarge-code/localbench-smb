@@ -1,4 +1,4 @@
-# Blueprint #3: Company Docs Q&A - Local Markdown & SQLite Search Without Cloud Silos
+# Blueprint #3: Company Docs Q&A: Local Markdown & SQLite Search Without Cloud Silos
 
 **Pillar**: `#3. Company Docs Q&A` (`03_company_docs`)  
 **Vertical**: Law Firms, Agencies, Consultancies, Medical Practices & Operations Teams  

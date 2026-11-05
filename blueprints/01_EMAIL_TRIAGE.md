@@ -1,4 +1,4 @@
-# Blueprint #1: Email Triage - Sorting the Inbox Locally for $0.00
+# Blueprint #1: Email Triage: Sorting the Inbox Locally for $0.00
 
 **Pillar**: `#1. Email Triage` (`01_email_triage`)  
 **Vertical**: Horizontal Business Operations (Agencies, Legal/Accounting Practices, Executive Teams, Property Management)  

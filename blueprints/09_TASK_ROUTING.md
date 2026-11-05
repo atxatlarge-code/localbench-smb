@@ -1,4 +1,4 @@
-# Blueprint #9: Task Routing - Running Background Helpers with Chat Approval Gates
+# Blueprint #9: Task Routing: Running Background Helpers with Chat Approval Gates
 
 **Pillar**: `#9. Task Routing` (`09_task_routing`)  
 **Vertical**: Operations, Customer Fulfillment, Engineering & Agency Teams  

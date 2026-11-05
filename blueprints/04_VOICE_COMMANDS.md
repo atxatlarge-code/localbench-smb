@@ -1,4 +1,4 @@
-# Blueprint #4: Voice Commands - Offline Voice-to-Action in Under 100ms
+# Blueprint #4: Voice Commands: Offline Voice-to-Action in Under 100ms
 
 **Pillar**: `#4. Voice Commands` (`04_voice_commands`)  
 **Vertical**: Agencies, Executive Operations, Field Services, Healthcare/Legal Dictation  

@@ -1,4 +1,4 @@
-# Blueprint #8: Process Automation - Turning Browser Demonstrations into Fast API Scripts
+# Blueprint #8: Process Automation: Turning Browser Demonstrations into Fast API Scripts
 
 **Pillar**: `#8. Process Automation` (`08_process_automation`)  
 **Vertical**: Accounts Receivable, Invoicing, Lead Fulfillment & Operations  

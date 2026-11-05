@@ -1,4 +1,4 @@
-# Blueprint #10: Local vs. Cloud Shootout - 100-Run Speed & Cost Comparison
+# Blueprint #10: Local vs. Cloud Shootout: 100-Run Speed & Cost Comparison
 
 **Pillar Reference**: Cross-Pillar Shootout (`LocalBench SMB v1.2`)  
 **Hardware Reference**: Apple Silicon Mac (64 GB Unified Memory, Metal GPU)  

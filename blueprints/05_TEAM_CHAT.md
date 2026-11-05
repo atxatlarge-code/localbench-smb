@@ -1,4 +1,4 @@
-# Blueprint #5: Team Chat - Lean Slack/Chat Triage & Outbound Style Guards
+# Blueprint #5: Team Chat: Lean Slack/Chat Triage & Outbound Style Guards
 
 **Pillar**: `#5. Team Chat` (`05_team_chat`)  
 **Vertical**: B2B Operations, Client Delivery, QA Teams & Agencies  

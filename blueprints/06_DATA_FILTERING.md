@@ -1,4 +1,4 @@
-# Blueprint #6: Data Filtering - Replacing Per-Row Cloud API Bills with Local Code Filters
+# Blueprint #6: Data Filtering: Replacing Per-Row Cloud API Bills with Local Code Filters
 
 **Pillar**: `#6. Data Filtering` (`06_data_filtering`)  
 **Vertical**: Finance, Accounting, B2B Lead Ops, Real Estate & Back-Office Data Teams  

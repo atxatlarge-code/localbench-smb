@@ -1,4 +1,4 @@
-# Blueprint #7: Business Formulas - Safe AI Updates for Billing & Operations Rules
+# Blueprint #7: Business Formulas: Safe AI Updates for Billing & Operations Rules
 
 **Pillar**: `#7. Business Formulas` (`07_business_formulas`)  
 **Vertical**: Billing, Accounting, RevOps & Internal Tooling  
