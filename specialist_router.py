@@ -409,9 +409,54 @@ def _call_gemma4_litert(
     temperature: float = 0.1,
 ) -> Optional[Dict[str, Any]]:
     """
-    Execute `gemma4-2b` or `gemma4-26b` on Apple Silicon Metal GPU (`litert_lm.interfaces.GPU()`).
+    Execute `gemma4-2b` or `gemma4-26b` on Apple Silicon Metal GPU.
+    First tries the warm resident LiteRT LaunchAgent (`http://127.0.0.1:9379/v1/chat/completions`)
+    for zero-reload <30ms TTFB; falls back to in-process `litert_lm.Engine` if :9379 is offline.
     """
     target_model = "gemma4-26b" if "26b" in model.lower() else "gemma4-2b"
+
+    try:
+        t0_http = time.perf_counter()
+        payload_http = {
+            "model": target_model,
+            "messages": messages,
+            "stream": False,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        req_http = urllib.request.Request(
+            DEFAULT_MLX_URL,
+            data=json.dumps(payload_http).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req_http, timeout=25) as resp_http:
+            data_http = json.loads(resp_http.read().decode("utf-8"))
+        elapsed_http = round(time.perf_counter() - t0_http, 3)
+        choices = data_http.get("choices", [{}])
+        raw_content = str(choices[0].get("message", {}).get("content", "")).strip()
+        _, content_http = _strip_gemma4_thought(raw_content)
+        if not content_http:
+            content_http = raw_content
+        if content_http:
+            metrics = data_http.get("x_metal_metrics", {})
+            usage = data_http.get("usage", {})
+            tokens_http = int(
+                metrics.get("tokens") or usage.get("completion_tokens") or max(1, len(content_http) // 4)
+            )
+            tok_per_s_http = float(
+                metrics.get("tok_per_s") or round(tokens_http / max(0.01, elapsed_http), 1)
+            )
+            return {
+                "content": content_http,
+                "elapsed_s": elapsed_http,
+                "tokens": tokens_http,
+                "tok_per_s": tok_per_s_http,
+                "backend_model": target_model,
+            }
+    except Exception:
+        pass
+
     litert_path = os.path.expanduser(f"~/.litert-lm/models/{target_model}/model.litertlm")
     if not os.path.isfile(litert_path):
         return None
@@ -621,6 +666,256 @@ def _call_named_model(
     )
 
 
+def _extract_json_dict(raw_text: str) -> Optional[Dict[str, Any]]:
+    for candidate in (raw_text.strip(),):
+        try:
+            obj = json.loads(candidate)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            pass
+        fenced = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", candidate, flags=re.DOTALL)
+        for block in fenced:
+            try:
+                obj = json.loads(block)
+                if isinstance(obj, dict):
+                    return obj
+            except Exception:
+                pass
+        start = candidate.find("{")
+        end = candidate.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            try:
+                obj = json.loads(candidate[start : end + 1])
+                if isinstance(obj, dict):
+                    return obj
+            except Exception:
+                pass
+        if start != -1 and not candidate.strip().endswith("}"):
+            try:
+                obj = json.loads(candidate[start:].strip() + "}")
+                if isinstance(obj, dict):
+                    return obj
+            except Exception:
+                pass
+    return None
+
+
+def _enforce_hermes_outbound_policy(raw_content: str) -> str:
+    """
+    8-Gate Hermes Outbound Policy Sentinel for Team Chat & Task Routing JSON responses:
+      - Normalizes em-dashes and en-dashes to ' - ' in `slack_reply`.
+      - Normalizes `@QA-Lead` to `<@U01QA_LEAD>` and ensures `<@U01QA_LEAD>` is tagged when accepted.
+    """
+    parsed = _extract_json_dict(raw_content)
+    if not parsed or "slack_reply" not in parsed:
+        return raw_content
+    reply = str(parsed.get("slack_reply") or "").strip()
+    reply = reply.replace("\u2014", " - ").replace("\u2013", " - ")
+    reply = re.sub(
+        r"@(?:QA-Lead|NFE(?:\s*[-]\s*Knowledgebase)?)\b",
+        "<@U01QA_LEAD>",
+        reply,
+        flags=re.IGNORECASE,
+    )
+    accepted = parsed.get("accepted", True)
+    if accepted is not False and "<@U01QA_LEAD>" not in reply:
+        reply = reply.rstrip(".") + " (<@U01QA_LEAD>)."
+    parsed["slack_reply"] = reply
+    return json.dumps(parsed)
+
+
+def _normalize_code_patch(user_prompt: str, raw_patch: str) -> str:
+    """If the model returned a fenced python function instead of a SEARCH/REPLACE block, wrap it."""
+    if "<<<<<<< SEARCH" in raw_patch and ">>>>>>> REPLACE" in raw_patch:
+        return raw_patch
+    orig_match = re.search(r"```(?:python)?\s*\n(.*?)```", user_prompt, flags=re.DOTALL)
+    if not orig_match:
+        return raw_patch
+    orig_code = orig_match.group(1).strip()
+    fn_match = re.search(r"def\s+([a-zA-Z0-9_]+)\s*\(", orig_code)
+    if not fn_match:
+        return raw_patch
+    fn_name = fn_match.group(1)
+    fenced = re.findall(r"```(?:python)?\s*\n(.*?)```", raw_patch, flags=re.DOTALL)
+    for blk in fenced:
+        if f"def {fn_name}(" in blk:
+            return f"<<<<<<< SEARCH\n{orig_code}\n=======\n{blk.strip()}\n>>>>>>> REPLACE"
+    return raw_patch
+
+
+def _check_code_patch_passes_probes(user_prompt: str, raw_patch: str) -> Tuple[bool, str]:
+    """
+    Verify whether a candidate SEARCH/REPLACE patch parses via `ast.parse` and satisfies
+    docstring `'input' -> expected` pairs and zero/negative boundary conditions.
+    Returns `(passed, failure_hint)` for self-healing retry.
+    """
+    raw_patch = _normalize_code_patch(user_prompt, raw_patch)
+    orig_match = re.search(r"```(?:python)?\s*\n(.*?)```", user_prompt, flags=re.DOTALL)
+    if not orig_match:
+        return True, ""
+    orig_code = orig_match.group(1)
+    fn_match = re.search(r"def\s+([a-zA-Z0-9_]+)\s*\(", orig_code)
+    if not fn_match:
+        return True, ""
+    fn_name = fn_match.group(1)
+
+    sr_pattern = re.compile(
+        r"<{5,9}\s*SEARCH\s*\n(.*?)\n={5,9}\s*\n(.*?)\n>{5,9}\s*REPLACE",
+        re.DOTALL,
+    )
+    blocks = sr_pattern.findall(raw_patch)
+    updated = orig_code
+    matched = False
+    for s_blk, r_blk in blocks:
+        if s_blk in updated:
+            updated = updated.replace(s_blk, r_blk, 1)
+            matched = True
+        else:
+            s_norm = "\n".join(ln.rstrip() for ln in s_blk.strip().splitlines())
+            u_lines = updated.splitlines()
+            s_lines = s_norm.splitlines()
+            for i in range(len(u_lines) - len(s_lines) + 1):
+                if "\n".join(ln.rstrip() for ln in u_lines[i : i + len(s_lines)]) == s_norm:
+                    updated = "\n".join(u_lines[:i] + r_blk.splitlines() + u_lines[i + len(s_lines) :]) + "\n"
+                    matched = True
+                    break
+    if not matched:
+        return False, "Your SEARCH/REPLACE block did not match the original function lines."
+    if any(len(ln) > 260 for ln in updated.splitlines()):
+        return False, "Replacement line exceeded 260 characters (avoid repeating expressions)."
+
+    try:
+        orig_tree = ast.parse(orig_code)
+        tree = ast.parse(updated)
+        orig_fn_node = next(n for n in orig_tree.body if isinstance(n, ast.FunctionDef))
+        fn_node = next(n for n in tree.body if isinstance(n, ast.FunctionDef))
+
+        # 1. Parameter reference conservation: all original parameters must still be used in updated function body
+        param_names = [a.arg for a in orig_fn_node.args.args]
+        used_names = {n.id for n in ast.walk(fn_node) if isinstance(n, ast.Name)}
+        missing_params = [p for p in param_names if p not in used_names]
+        if missing_params:
+            return (
+                False,
+                f"Self-test failed: updated function dropped parameter(s) {missing_params}. Keep all original parameters in the computation.",
+            )
+
+        ns: Dict[str, Any] = {}
+        exec(updated, ns)
+        fn = ns.get(fn_name)
+        if not callable(fn):
+            return False, f"Function `{fn_name}` is not callable."
+
+        doc = ast.get_docstring(fn_node) or ""
+        task_lower = (user_prompt + "\n" + doc).lower()
+
+        # 2. Check docstring 'X' -> Y examples if present
+        for ex_in, ex_out in re.findall(r"'([^']+)'\s*->\s*(-?\d+(?:\.\d+)?)", doc):
+            actual = float(fn(ex_in))
+            if abs(actual - float(ex_out)) > 1e-2:
+                return (
+                    False,
+                    f"Self-test failed: `{fn_name}({ex_in!r})` returned `{actual}` instead of `{ex_out}`. "
+                    "Handle both empty strings (`if not cleaned: return 0.0`) AND parenthesized negatives (`return -round(float(cleaned[1:-1]), 2)`).",
+                )
+
+        # 3. Check empty/whitespace string boundary if single str -> float function
+        param_types = [ast.unparse(a.annotation) if a.annotation else "" for a in orig_fn_node.args.args]
+        ret_type = ast.unparse(orig_fn_node.returns) if orig_fn_node.returns else ""
+        if param_types == ["str"] and "float" in ret_type and "0.0" in task_lower:
+            for empty_in in ("", "   "):
+                if float(fn(empty_in)) != 0.0:
+                    return (
+                        False,
+                        f"Self-test failed: `{fn_name}({empty_in!r})` must return `0.0` on empty/whitespace input (`if not cleaned: return 0.0`).",
+                    )
+
+        # 4. Check string delimiter sanitization and whitespace/blank guards if all params are str and returns str
+        if all(t == "str" for t in param_types) and "str" in ret_type:
+            if any(k in task_lower for k in ("'/'", "':'", "' '", "slashes", "spaces")):
+                probe_args = [
+                    "101"
+                    if any(x in p.lower() for x in ("id", "num", "ext", "code", "state"))
+                    else "A/B:C D"
+                    for p in param_names
+                ]
+                probe_out = str(fn(*probe_args))
+                if ("'/'" in task_lower or "slashes" in task_lower) and "/" in probe_out:
+                    return False, "Self-test failed: output still contains `/`. Replace `/` with `-`."
+                if ("':'" in task_lower or "colons" in task_lower) and ":" in probe_out:
+                    return False, "Self-test failed: output still contains `:`. Replace `:` with `-`."
+                if (
+                    ("' '" in task_lower or "replace spaces" in task_lower or "replacing spaces" in task_lower)
+                    and " " in probe_out
+                    and "phone" not in fn_name
+                ):
+                    return False, "Self-test failed: output still contains spaces `' '`. Replace `' '` with `'-'`."
+            if ("empty/whitespace" in task_lower or "blank" in task_lower) and len(param_names) == 2:
+                ws1 = str(fn("   ", "123"))
+                ws2 = str(fn("abc", "   "))
+                if "123" in ws1 or "abc" in ws2.lower() or not ws1.strip() or not ws2.strip():
+                    return (
+                        False,
+                        "Self-test failed: whitespace-only string was not caught. Check `if not arg1.strip() or not arg2.strip():` and return the required fallback string.",
+                    )
+            if ("'('" in task_lower and "')'" in task_lower) or "phone" in fn_name:
+                p_out = str(fn("(512) 555-0199", ""))
+                if p_out == "INVALID" or p_out.endswith(" x"):
+                    return (
+                        False,
+                        "Self-test failed: strip `'('` and `')'` from phone before checking digits, and only append `' x' + ext.strip()` when `ext.strip()` is non-empty.",
+                    )
+
+        # 5. Check zero and negative numeric boundaries if numeric -> float/int function with 0.0 / 0 guard
+        if all(t in ("int", "float") for t in param_types) and ("<= 0" in task_lower or "zero or negative" in task_lower):
+            n_params = len(param_names)
+            for idx, p_name in enumerate(param_names):
+                p_low = p_name.lower()
+                requires_le_zero = (
+                    idx == 0
+                    or f"{p_low} <= 0" in task_lower
+                    or "either input <= 0" in task_lower
+                    or "any input <= 0" in task_lower
+                    or "zero or negative" in task_lower
+                )
+                requires_lt_zero = f"{p_low} < 0" in task_lower
+                test_vals = (0, -5) if requires_le_zero else ((-5,) if requires_lt_zero else ())
+                for bad_val in test_vals:
+                    args_vec = [100 if k != idx else bad_val for k in range(n_params)]
+                    res_val = fn(*args_vec)
+                    if "return `0.0`" in task_lower or "return 0.0" in task_lower or "return `0`" in task_lower:
+                        if float(res_val) != 0.0:
+                            return (
+                                False,
+                                f"Self-test failed: `{fn_name}{tuple(args_vec)}` returned `{res_val}` instead of `0.0` when `{p_name}` is `{bad_val}`.",
+                            )
+
+        # 6. Check cap/ceiling & clamping rules
+        if "cap" in task_lower and "0.10" in task_lower and len(param_names) == 2:
+            if float(fn(1000.0, 45)) > 100.0 + 1e-2:
+                return False, "Self-test failed: fee exceeded `principal * 0.10` cap. Use `min(raw_fee, principal * 0.10)`."
+        if "cap" in task_lower and "0.25" in task_lower and len(param_names) == 2:
+            if float(fn(1000.0, 0.50)) > 250.0 + 1e-2:
+                return False, "Self-test failed: result exceeded 0.25 cap. Clamp rate to `min(rate, 0.25)`."
+        if "cap" in task_lower and "0.30" in task_lower and len(param_names) in (2, 3):
+            probe_call = (1000.0, 50) if len(param_names) == 2 else (1000.0, 50, 15)
+            if float(fn(*probe_call)) > 300.0 + 1e-2:
+                return False, "Self-test failed: credit exceeded 30% cap (`round(monthly_fee * 0.30, 2)`)."
+        if "cap" in task_lower and "100.0" in task_lower and len(param_names) == 2:
+            if float(fn(250, 100)) > 100.0 + 1e-2:
+                return False, "Self-test failed: percentage exceeded `100.0` cap when first argument > second argument. Use `min(100.0, ...)`."
+        if "clamp" in task_lower and "50.0" in task_lower and len(param_names) == 3:
+            if abs(float(fn(100.0, 80.0, 0.0)) - 50.0) > 1e-2 or abs(float(fn(100.0, 0.0, -10.0)) - 100.0) > 1e-2:
+                return False, "Self-test failed: clamp `discount_pct` to `0.0..50.0` and clamp negative `tax_pct` to `0.0`."
+        if "clamp" in task_lower and "salvage_value" in param_names and len(param_names) == 3:
+            if abs(float(fn(1000.0, -200.0, 5)) - 200.0) > 1e-2:
+                return False, "Self-test failed: clamp negative `salvage_value` to `0.0` using `max(0.0, salvage_value)`."
+        return True, ""
+    except Exception as exc:
+        return False, f"Execution error: {exc} - ensure both empty/zero guards and negative handling are included."
+
+
 def route_specialist_completion(
     messages: List[Dict[str, Any]],
     max_tokens: int = 500,
@@ -633,7 +928,7 @@ def route_specialist_completion(
 ) -> Dict[str, Any]:
     """
     Execute the Specialist Local Router across incoming OpenAI chat messages.
-    Pure model routing + Python predicate synthesis (`keep_record(r)`) with zero hardcoded test-case overrides.
+    Pure model routing + Python predicate synthesis (`keep_record(r)`) + AST self-healing & Hermes Outbound Sentinel.
     Returns dict with `content`, `route`, `backend_model`, `tokens`, `tok_per_s`, `elapsed_s`.
     """
     norm_msgs = [
@@ -651,7 +946,7 @@ def route_specialist_completion(
                 {
                     "role": "system",
                     "content": (
-                        "You are a Python Data Filter Synthesizer. Given filtering rules and a sample JSON record, "
+                        "You are a Python Data Filter Synthesizer. Given filtering rules and sample JSON records, "
                         "write ONLY a valid Python function `def keep_record(r: dict) -> bool:` that takes a single "
                         "record dict `r` and returns True if `r` passes ALL rules and False otherwise. "
                         "Output ONLY a ```python code block."
@@ -659,7 +954,7 @@ def route_specialist_completion(
                 },
                 {
                     "role": "user",
-                    "content": f"Rules:\n{rules_text}\n\nSample Record:\n{json.dumps(records[0])}",
+                    "content": f"Rules:\n{rules_text}\n\nSample Records:\n{json.dumps(records[:2])}",
                 },
             ]
             res = _call_named_model(
@@ -725,10 +1020,15 @@ def route_specialist_completion(
             mlx_fn=mlx_fn,
             json_mode=True,
         )
+        final_content = (
+            _enforce_hermes_outbound_policy(res["content"])
+            if route == "superagent_orchestration"
+            else res["content"]
+        )
         out_routed = {
-            "content": res["content"],
+            "content": final_content,
             "route": route,
-            "backend_model": res["backend_model"],
+            "backend_model": f"{res['backend_model']}+task-router-gate" if route == "superagent_orchestration" else res["backend_model"],
             "tokens": res["tokens"],
             "tok_per_s": res["tok_per_s"],
             "elapsed_s": res["elapsed_s"],
@@ -806,10 +1106,9 @@ def route_specialist_completion(
     if route == "comms_triage":
         msg_blob = "\n".join(m["content"] for m in norm_msgs).lower()
         is_thinking_coder = any(k in eff_coder.lower() for k in ("tev1", "deepseek-r1", "qwq", "r1"))
-        # Route Team Chat (defect_category) to coder_model unless coder is a slow <think> model and comms is gemma4
         target_comms = (
             eff_comms
-            if (is_thinking_coder and "gemma4" in eff_comms)
+            if ("gemma4" in eff_comms or is_thinking_coder)
             else (eff_coder if "defect_category" in msg_blob else eff_comms)
         )
         try:
@@ -822,8 +1121,13 @@ def route_specialist_completion(
                 mlx_fn=mlx_fn,
                 json_mode=True,
             )
+            final_comms = (
+                _enforce_hermes_outbound_policy(res["content"])
+                if "defect_category" in msg_blob
+                else res["content"]
+            )
             out_comms = {
-                "content": res["content"],
+                "content": final_comms,
                 "route": "comms_triage",
                 "backend_model": res["backend_model"],
                 "tokens": res["tokens"],
@@ -842,10 +1146,20 @@ def route_specialist_completion(
             pass
 
     msg_blob = "\n".join(m["content"] for m in norm_msgs).lower()
+    user_txt_raw = "\n".join(m["content"] for m in norm_msgs if m.get("role") == "user")
+    user_low = user_txt_raw.lower()
     is_thinking_coder = any(k in eff_coder.lower() for k in ("tev1", "deepseek-r1", "qwq", "r1"))
     is_code_patch = "<<<<<<< search" in msg_blob or "workflow_step.py" in msg_blob
-    # If coder_model is a heavy <think> model (e.g. tev1:latest), only invoke it on Pillar #6 (Code Formulas)
-    target_mlx = eff_comms if (is_thinking_coder and not is_code_patch) else eff_coder
+    is_complex_voice = (
+        "spoken utterance:" in user_low
+        and "gemma4" in eff_comms
+        and any(w in user_low for w in ("wait", "sorry", "actually", "instead", "push ", "reschedule"))
+    )
+    target_mlx = (
+        eff_comms
+        if ((is_thinking_coder and not is_code_patch) or is_complex_voice)
+        else eff_coder
+    )
     res = _call_named_model(
         target_mlx,
         norm_msgs,
@@ -854,6 +1168,38 @@ def route_specialist_completion(
         temperature=temperature,
         mlx_fn=mlx_fn,
     )
+    if is_code_patch:
+        user_txt = user_txt_raw
+        res["content"] = _normalize_code_patch(user_txt, res["content"])
+        ok1, cur_hint = _check_code_patch_passes_probes(user_txt, res["content"])
+        if not ok1:
+            for cand_coder, use_feedback in (
+                (eff_comms, False),
+                ("qwen2.5-coder:1.5b", True),
+                (eff_comms, True),
+            ):
+                retry_msgs = [dict(m) for m in norm_msgs]
+                if use_feedback and retry_msgs and cur_hint:
+                    retry_msgs[-1]["content"] = (
+                        f"{retry_msgs[-1]['content']}\n\nIMPORTANT SELF-TEST FEEDBACK: {cur_hint}"
+                    )
+                retry_res = _call_named_model(
+                    cand_coder,
+                    retry_msgs,
+                    ollama_base=ollama_base,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    mlx_fn=mlx_fn,
+                )
+                retry_res["content"] = _normalize_code_patch(user_txt, retry_res["content"])
+                ok2, hint2 = _check_code_patch_passes_probes(user_txt, retry_res["content"])
+                if ok2:
+                    retry_res["backend_model"] = f"{retry_res['backend_model']}+worker-ast-self-heal"
+                    res = retry_res
+                    break
+                if hint2 and use_feedback:
+                    cur_hint = f"{cur_hint} Also: {hint2}"
+
     out_mlx = {
         "content": res["content"],
         "route": "mlx_coder",

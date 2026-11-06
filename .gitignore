@@ -3,3 +3,4 @@ __pycache__/
 .DS_Store
 .venv/
 results/router_telemetry_ledger.json
+datasets/localbench_smb_private.jsonl
