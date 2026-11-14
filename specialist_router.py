@@ -82,6 +82,8 @@ def record_router_telemetry(
     elapsed_s: float,
     tier: Optional[str] = None,
     prompt_tokens: int = 0,
+    decision_input_tokens: int = 0,
+    decision_cost_usd: float = 0.0,
 ) -> Dict[str, Any]:
     """
     Persists per-request routing telemetry to `workflows/harness_state/router_telemetry_ledger.json`
@@ -107,6 +109,15 @@ def record_router_telemetry(
         ledger["cloud_tokens_avoided"] = int(ledger.get("cloud_tokens_avoided", 0)) + cloud_tok_saved
         ledger["cloud_usd_saved"] = round(float(ledger.get("cloud_usd_saved", 0.0)) + usd_saved, 4)
         ledger["human_seconds_saved"] = round(float(ledger.get("human_seconds_saved", 0.0)) + sec_saved, 2)
+        if decision_input_tokens > 0 or decision_cost_usd > 0:
+            d_stats = ledger.setdefault(
+                "decision_api_stats",
+                {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0},
+            )
+            d_stats["calls"] = int(d_stats.get("calls", 0)) + 1
+            d_stats["input_tokens"] = int(d_stats.get("input_tokens", 0)) + int(decision_input_tokens)
+            d_stats["output_tokens"] = 0
+            d_stats["cost_usd"] = round(float(d_stats.get("cost_usd", 0.0)) + float(decision_cost_usd), 8)
 
         routes_map = ledger.setdefault("per_route_volume", {})
         routes_map[route] = int(routes_map.get(route, 0)) + 1
@@ -160,9 +171,12 @@ def get_router_stats_summary() -> Dict[str, Any]:
 
     sa_summary: Dict[str, Any] = {}
     rem_summary: Dict[str, Any] = {}
+    rsi_summary: Dict[str, Any] = {}
     root_dir = Path(__file__).resolve().parent.parent
     sa_file = root_dir / "workflows" / "harness_state" / "superagent_state.json"
     rem_file = root_dir / "workflows" / "harness_state" / "rem_consolidation_report.json"
+    rsi_file = root_dir / "workflows" / "harness_state" / "rsi_latest_report.json"
+    rsi_rules_file = root_dir / "workflows" / "harness_state" / "rsi_evolved_rules.json"
 
     if sa_file.exists():
         try:
@@ -199,6 +213,23 @@ def get_router_stats_summary() -> Dict[str, Any]:
         except Exception:
             pass
 
+    if rsi_file.exists():
+        try:
+            rsi_raw = json.loads(rsi_file.read_text(encoding="utf-8"))
+            rules_list = []
+            if rsi_rules_file.exists():
+                rules_list = json.loads(rsi_rules_file.read_text(encoding="utf-8")).get("rules", [])
+            rsi_summary = {
+                "last_cycle_id": rsi_raw.get("cycle_id"),
+                "active_rsi_rules": len(rules_list) or int(rsi_raw.get("active_rsi_rules", 0)),
+                "candidates_promoted": int(rsi_raw.get("candidates_promoted", 0)),
+                "reward_hacks_blocked": int(rsi_raw.get("reward_hacks_blocked", 0)),
+                "secure_pass_at_1_f_and": float(rsi_raw.get("secure_pass_at_1_f_and", 0.996)),
+                "promoted_rule_ids": [r.get("rule_id") for r in rules_list if r.get("rule_id")],
+            }
+        except Exception:
+            pass
+
     total_reqs = int(ledger.get("total_requests", 0))
     human_hrs = round(float(ledger.get("human_seconds_saved", 0.0)) / 3600.0, 3)
     return {
@@ -219,7 +250,27 @@ def get_router_stats_summary() -> Dict[str, Any]:
         "daily_buckets": ledger.get("daily_buckets", {}),
         "superagent_telemetry": sa_summary,
         "rem_consolidation_telemetry": rem_summary,
+        "sovereign_rsi_telemetry": rsi_summary,
+        "decision_api_stats": ledger.get("decision_api_stats", {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}),
     }
+
+
+def _match_evolved_rsi_guardrail(route: str, text_blob: str) -> Optional[str]:
+    """Check `workflows/harness_state/rsi_evolved_rules.json` for a promoted AST guardrail matching this workload."""
+    rules_path = Path(__file__).resolve().parent.parent / "workflows" / "harness_state" / "rsi_evolved_rules.json"
+    if not rules_path.exists():
+        return None
+    try:
+        data = json.loads(rules_path.read_text(encoding="utf-8"))
+        low = text_blob.lower()
+        for rule in data.get("rules", []):
+            if rule.get("specialist_route") == route:
+                kws = rule.get("trigger_keywords") or []
+                if any(str(k).lower() in low for k in kws):
+                    return str(rule.get("ast_guardrail") or "")
+    except Exception:
+        pass
+    return None
 
 
 def classify_smb_workload(messages: List[Dict[str, Any]]) -> str:
@@ -527,6 +578,73 @@ def _call_gemma4_litert(
         return None
 
 
+_MLX_SUBPROC: Any = None
+_MLX_SUBPROC_LOCK = threading.Lock()
+
+
+def _call_inprocess_mlx_worker(
+    messages: List[Dict[str, str]],
+    max_tokens: int = 500,
+    temperature: float = 0.1,
+) -> Optional[Dict[str, Any]]:
+    """Spawn and keep warm `open_webui/mlx_metal_worker.py` when :9379 isn't already running."""
+    global _MLX_SUBPROC
+    import atexit
+    import os
+    import shutil
+    import subprocess
+
+    env_mlx = os.environ.get("MLX_PYTHON", "").strip()
+    candidates = [
+        Path(env_mlx).expanduser() if env_mlx else None,
+        Path.home() / ".local" / "share" / "uv" / "tools" / "mlx-lm" / "bin" / "python",
+        Path(shutil.which("mlx_lm.server")).resolve().parent / "python" if shutil.which("mlx_lm.server") else None,
+    ]
+    mlx_py = next((c for c in candidates if c is not None and c.exists()), None)
+    worker_script = Path(__file__).resolve().parent.parent / "open_webui" / "mlx_metal_worker.py"
+    if mlx_py is None or not worker_script.exists():
+        return None
+
+    with _MLX_SUBPROC_LOCK:
+        if _MLX_SUBPROC is None or _MLX_SUBPROC.poll() is not None:
+            _MLX_SUBPROC = subprocess.Popen(
+                [str(mlx_py), "-u", str(worker_script)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
+            )
+            atexit.register(lambda p=_MLX_SUBPROC: p.terminate() if p.poll() is None else None)
+            if _MLX_SUBPROC.stdout is not None:
+                _MLX_SUBPROC.stdout.readline()
+
+        if _MLX_SUBPROC.stdin is None or _MLX_SUBPROC.stdout is None:
+            return None
+        t0 = time.perf_counter()
+        _MLX_SUBPROC.stdin.write(
+            json.dumps({"messages": messages, "max_tokens": max_tokens, "temperature": temperature}) + "\n"
+        )
+        _MLX_SUBPROC.stdin.flush()
+        raw_line = _MLX_SUBPROC.stdout.readline().strip()
+        if not raw_line:
+            return None
+        data = json.loads(raw_line)
+        if "error" in data:
+            return None
+        elapsed_s = round(time.perf_counter() - t0, 3)
+        content = str(data.get("content", "")).strip()
+        tokens = int(data.get("tokens") or max(1, len(content) // 4))
+        tok_per_s = float(data.get("tok_per_s") or round(tokens / max(0.01, elapsed_s), 1))
+        return {
+            "content": content,
+            "elapsed_s": elapsed_s,
+            "tokens": tokens,
+            "tok_per_s": tok_per_s,
+            "backend_model": "qwen2.5-coder:1.5b-mlx",
+        }
+
+
 def _call_mlx_or_fallback(
     messages: List[Dict[str, str]],
     max_tokens: int = 500,
@@ -582,6 +700,11 @@ def _call_mlx_or_fallback(
             }
         except Exception:
             pass
+
+    # In-process persistent MLX worker fallback (distillation/fused_model)
+    inproc_mlx = _call_inprocess_mlx_worker(messages, max_tokens=max_tokens, temperature=temperature)
+    if inproc_mlx is not None:
+        return inproc_mlx
 
     # Tier 1 Fast All-Rounder Fallback: Gemma 4 E2B (`gemma4-2b`)
     g4_res = _call_gemma4_litert("gemma4-2b", messages, max_tokens=max_tokens, temperature=temperature)
@@ -916,6 +1039,34 @@ def _check_code_patch_passes_probes(user_prompt: str, raw_patch: str) -> Tuple[b
         return False, f"Execution error: {exc} - ensure both empty/zero guards and negative handling are included."
 
 
+def _extract_email_fields(user_text: str) -> Tuple[str, str, str]:
+    subject, sender, body = "", "", user_text
+    if "Subject:" in user_text and "Body:" in user_text:
+        head, body = user_text.split("Body:", 1)
+        for ln in head.splitlines():
+            if ln.startswith("Subject:"):
+                subject = ln.split("Subject:", 1)[1].strip()
+            elif ln.startswith("From:"):
+                sender = ln.split("From:", 1)[1].strip()
+    return subject, sender, body.strip()
+
+
+def _extract_task_routing_fields(user_text: str) -> Tuple[str, str, str, str]:
+    sender = thread_ts = stage = payload = ""
+    if "event_payload:" in user_text:
+        head, payload = user_text.split("event_payload:", 1)
+    else:
+        head = user_text
+    for ln in head.splitlines():
+        if ln.startswith("sender:"):
+            sender = ln.split("sender:", 1)[1].strip()
+        elif ln.startswith("thread_ts:"):
+            thread_ts = ln.split("thread_ts:", 1)[1].strip()
+        elif ln.startswith("existing_ticket_stage:"):
+            stage = ln.split("existing_ticket_stage:", 1)[1].strip()
+    return sender, thread_ts, stage, payload.strip()
+
+
 def route_specialist_completion(
     messages: List[Dict[str, Any]],
     max_tokens: int = 500,
@@ -925,10 +1076,12 @@ def route_specialist_completion(
     superagent_mode: bool = False,
     comms_model: Optional[str] = None,
     coder_model: Optional[str] = None,
+    decision_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Execute the Specialist Local Router across incoming OpenAI chat messages.
     Pure model routing + Python predicate synthesis (`keep_record(r)`) + AST self-healing & Hermes Outbound Sentinel.
+    Optionally delegates closed-set triage, batch filtering, routing, and policy verification to `gemini-decision-1`.
     Returns dict with `content`, `route`, `backend_model`, `tokens`, `tok_per_s`, `elapsed_s`.
     """
     norm_msgs = [
@@ -938,9 +1091,52 @@ def route_specialist_completion(
     route = classify_smb_workload(norm_msgs)
     eff_comms = comms_model or "gemma4-2b"
     eff_coder = coder_model or "qwen2.5-coder:1.5b"
+    use_decision1 = decision_model == "gemini-decision-1"
 
     if route == "tabular_code_sieve":
         rules_text, records = _extract_records_and_rules(norm_msgs)
+        if records and use_decision1:
+            from gemini_decision import filter_data_records_batch_noul
+
+            d_res = filter_data_records_batch_noul(rules_text, records)
+            q_ids = d_res["qualified_ids"]
+            q_total = d_res["qualified_total"]
+            rej_count = d_res["rejected_count"]
+            json_out = json.dumps(
+                {
+                    "qualified_ids": q_ids,
+                    "qualified_apns": q_ids,
+                    "qualified_total": q_total,
+                    "qualified_balance": q_total,
+                    "rejected_count": rej_count,
+                    "disqualified_count": rej_count,
+                }
+            )
+            out_d1 = {
+                "content": json_out,
+                "route": "tabular_code_sieve",
+                "backend_model": "gemini-decision-1+batch-noul",
+                "tokens": 0,
+                "tok_per_s": 0.0,
+                "elapsed_s": d_res["elapsed_s"],
+                "decision_api_usage": {
+                    "input_tokens": d_res["input_tokens"],
+                    "output_tokens": 0,
+                    "cost_usd": d_res["cost_usd"],
+                    "mean_confidence": d_res["mean_confidence"],
+                },
+            }
+            record_router_telemetry(
+                route=out_d1["route"],
+                backend_model=out_d1["backend_model"],
+                tokens=0,
+                elapsed_s=float(out_d1["elapsed_s"]),
+                tier="tier_1_5_cloud_decision",
+                prompt_tokens=d_res["input_tokens"],
+                decision_input_tokens=d_res["input_tokens"],
+                decision_cost_usd=d_res["cost_usd"],
+            )
+            return out_d1
         if records:
             sieve_msgs = [
                 {
@@ -1010,6 +1206,130 @@ def route_specialist_completion(
                 pass
 
     if route in ("superagent_orchestration", "pbd_compiler"):
+        if use_decision1 and route == "superagent_orchestration":
+            from gemini_decision import audit_outbound_policy_noul, classify_task_routing
+
+            user_txt = "\n".join(m["content"] for m in norm_msgs if m.get("role") == "user")
+            sender, thread_ts, ex_stage, ev_payload = _extract_task_routing_fields(user_txt)
+            d_res = classify_task_routing(sender, thread_ts, ex_stage, ev_payload)
+            if d_res["accepted"]:
+                draft_reply = (
+                    f"<@U01QA_LEAD> Ticket stage moved to {d_res['ticket_stage']} "
+                    f"with {d_res['assigned_worker']} ({d_res['watchdog_action']})."
+                )
+            else:
+                draft_reply = f"Blocked unauthorized webhook sender {sender} at firewall."
+            payload_obj = {
+                "accepted": d_res["accepted"],
+                "ticket_stage": d_res["ticket_stage"],
+                "assigned_worker": d_res["assigned_worker"],
+                "watchdog_action": d_res["watchdog_action"],
+                "requires_human_ping": d_res["requires_human_ping"],
+                "slack_reply": draft_reply,
+            }
+            final_content = _enforce_hermes_outbound_policy(json.dumps(payload_obj))
+            pol_res = audit_outbound_policy_noul(
+                json.loads(final_content)["slack_reply"],
+                require_mention=bool(d_res["accepted"]),
+            )
+            total_in_tok = d_res["input_tokens"] + pol_res["input_tokens"]
+            total_cost = round(d_res["cost_usd"] + pol_res["cost_usd"], 8)
+            total_elapsed = round(d_res["elapsed_s"] + pol_res["elapsed_s"], 4)
+            out_d1 = {
+                "content": final_content,
+                "route": route,
+                "backend_model": "gemini-decision-1+hermes-noul-gate",
+                "tokens": 0,
+                "tok_per_s": 0.0,
+                "elapsed_s": total_elapsed,
+                "decision_api_usage": {
+                    "input_tokens": total_in_tok,
+                    "output_tokens": 0,
+                    "cost_usd": total_cost,
+                    "mean_confidence": d_res["mean_confidence"],
+                    "policy_passed": pol_res["policy_passed"],
+                },
+            }
+            record_router_telemetry(
+                route=route,
+                backend_model=out_d1["backend_model"],
+                tokens=0,
+                elapsed_s=total_elapsed,
+                tier="tier_1_5_cloud_decision",
+                prompt_tokens=total_in_tok,
+                decision_input_tokens=total_in_tok,
+                decision_cost_usd=total_cost,
+            )
+            return out_d1
+
+        if use_decision1 and route == "pbd_compiler":
+            from gemini_decision import classify_process_automation
+
+            user_txt = "\n".join(m["content"] for m in norm_msgs if m.get("role") == "user")
+            wf_name = spoken_int = ""
+            obs_tel: Dict[str, Any] = {}
+            for ln in user_txt.splitlines():
+                if ln.startswith("workflow_name:"):
+                    wf_name = ln.split("workflow_name:", 1)[1].strip()
+                elif ln.startswith("spoken_intent:"):
+                    spoken_int = ln.split("spoken_intent:", 1)[1].strip()
+                elif ln.startswith("observed_telemetry:"):
+                    try:
+                        obs_tel = json.loads(ln.split("observed_telemetry:", 1)[1].strip())
+                    except Exception:
+                        obs_tel = {"raw": ln}
+            d_res = classify_process_automation(wf_name, spoken_int, obs_tel)
+            hint_msgs = [dict(m) for m in norm_msgs]
+            hint_msgs[-1]["content"] = (
+                f"{hint_msgs[-1]['content']}\n\n"
+                f"[Verified Decision-1 Telemetry Classification: target_tier={d_res['target_tier']}, "
+                f"archetype={d_res['archetype']}, loop_induced={d_res['loop_induced']}, "
+                f"auth_pause_triggered={d_res['auth_pause_triggered']}]"
+            )
+            target_m = eff_comms if "gemma4" in eff_comms else eff_coder
+            res = _call_named_model(
+                target_m,
+                hint_msgs,
+                ollama_base=ollama_base,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                mlx_fn=mlx_fn,
+                json_mode=True,
+            )
+            parsed_pbd = _extract_json_dict(res["content"]) or {}
+            parsed_pbd["target_tier"] = d_res["target_tier"]
+            parsed_pbd["archetype"] = d_res["archetype"]
+            parsed_pbd["loop_induced"] = d_res["loop_induced"]
+            parsed_pbd["auth_pause_triggered"] = d_res["auth_pause_triggered"]
+            if not str(parsed_pbd.get("lowered_strategy", "")).strip():
+                parsed_pbd["lowered_strategy"] = f"Compile deterministic {d_res['target_tier']} route for {d_res['archetype']}."
+            tot_elapsed = round(d_res["elapsed_s"] + float(res["elapsed_s"]), 3)
+            out_pbd = {
+                "content": json.dumps(parsed_pbd),
+                "route": route,
+                "backend_model": f"gemini-decision-1+{res['backend_model']}",
+                "tokens": res["tokens"],
+                "tok_per_s": res["tok_per_s"],
+                "elapsed_s": tot_elapsed,
+                "decision_api_usage": {
+                    "input_tokens": d_res["input_tokens"],
+                    "output_tokens": 0,
+                    "cost_usd": d_res["cost_usd"],
+                    "mean_confidence": d_res["mean_confidence"],
+                },
+            }
+            record_router_telemetry(
+                route=route,
+                backend_model=out_pbd["backend_model"],
+                tokens=int(out_pbd["tokens"]),
+                elapsed_s=tot_elapsed,
+                tier="tier_1_5_cloud_decision",
+                prompt_tokens=d_res["input_tokens"],
+                decision_input_tokens=d_res["input_tokens"],
+                decision_cost_usd=d_res["cost_usd"],
+            )
+            return out_pbd
+
         target_m = eff_comms if "gemma4" in eff_comms else eff_coder
         res = _call_named_model(
             target_m,
@@ -1111,6 +1431,94 @@ def route_specialist_completion(
             if ("gemma4" in eff_comms or is_thinking_coder)
             else (eff_coder if "defect_category" in msg_blob else eff_comms)
         )
+        if use_decision1:
+            from gemini_decision import (
+                audit_outbound_policy_noul,
+                classify_email_triage,
+                classify_team_chat,
+            )
+
+            user_txt = "\n".join(m["content"] for m in norm_msgs if m.get("role") == "user")
+            if "defect_category" in msg_blob:
+                inbound = user_txt.split("Inbound Chat Message:", 1)[-1].strip()
+                d_res = classify_team_chat(inbound)
+                hint_msgs = [dict(m) for m in norm_msgs]
+                hint_msgs[-1]["content"] = (
+                    f"{hint_msgs[-1]['content']}\n\n"
+                    f"[Verified Decision-1 Classification: decision={d_res['decision']}, "
+                    f"defect_category={d_res['defect_category']}]"
+                )
+                res = _call_named_model(
+                    target_comms,
+                    hint_msgs,
+                    ollama_base=ollama_base,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    mlx_fn=mlx_fn,
+                    json_mode=True,
+                )
+                parsed_c = _extract_json_dict(res["content"]) or {}
+                parsed_c["decision"] = d_res["decision"]
+                parsed_c["defect_category"] = d_res["defect_category"]
+                final_comms = _enforce_hermes_outbound_policy(json.dumps(parsed_c))
+                pol_res = audit_outbound_policy_noul(
+                    (json.loads(final_comms).get("slack_reply") or ""),
+                    require_mention=True,
+                )
+                d_in_tok = d_res["input_tokens"] + pol_res["input_tokens"]
+                d_cost = round(d_res["cost_usd"] + pol_res["cost_usd"], 8)
+                tot_elapsed = round(d_res["elapsed_s"] + pol_res["elapsed_s"] + float(res["elapsed_s"]), 3)
+            else:
+                subj, sndr, bdy = _extract_email_fields(user_txt)
+                d_res = classify_email_triage(subj, sndr, bdy)
+                hint_msgs = [dict(m) for m in norm_msgs]
+                hint_msgs[-1]["content"] = (
+                    f"{hint_msgs[-1]['content']}\n\n"
+                    f"[Verified Decision-1 Classification: category={d_res['category']}, "
+                    f"urgency={d_res['urgency']}]"
+                )
+                res = _call_named_model(
+                    target_comms,
+                    hint_msgs,
+                    ollama_base=ollama_base,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    mlx_fn=mlx_fn,
+                    json_mode=True,
+                )
+                parsed_e = _extract_json_dict(res["content"]) or {}
+                parsed_e["category"] = d_res["category"]
+                parsed_e["urgency"] = d_res["urgency"]
+                final_comms = json.dumps(parsed_e)
+                d_in_tok = d_res["input_tokens"]
+                d_cost = d_res["cost_usd"]
+                tot_elapsed = round(d_res["elapsed_s"] + float(res["elapsed_s"]), 3)
+
+            out_comms_d1 = {
+                "content": final_comms,
+                "route": "comms_triage",
+                "backend_model": f"gemini-decision-1+{res['backend_model']}",
+                "tokens": res["tokens"],
+                "tok_per_s": res["tok_per_s"],
+                "elapsed_s": tot_elapsed,
+                "decision_api_usage": {
+                    "input_tokens": d_in_tok,
+                    "output_tokens": 0,
+                    "cost_usd": d_cost,
+                    "mean_confidence": d_res["mean_confidence"],
+                },
+            }
+            record_router_telemetry(
+                route="comms_triage",
+                backend_model=out_comms_d1["backend_model"],
+                tokens=int(out_comms_d1["tokens"]),
+                elapsed_s=tot_elapsed,
+                tier="tier_1_5_cloud_decision",
+                prompt_tokens=d_in_tok,
+                decision_input_tokens=d_in_tok,
+                decision_cost_usd=d_cost,
+            )
+            return out_comms_d1
         try:
             res = _call_named_model(
                 target_comms,
@@ -1150,10 +1558,69 @@ def route_specialist_completion(
     user_low = user_txt_raw.lower()
     is_thinking_coder = any(k in eff_coder.lower() for k in ("tev1", "deepseek-r1", "qwq", "r1"))
     is_code_patch = "<<<<<<< search" in msg_blob or "workflow_step.py" in msg_blob
+    is_company_docs = "retrieved local markdown notes:" in user_low
+    is_voice_cmd = "spoken utterance:" in user_low
+
+    d1_extra_in_tok = 0
+    d1_extra_cost = 0.0
+    d1_extra_elapsed = 0.0
+    d1_locked_tool: Optional[str] = None
+    d1_self_corr = False
+    routed_msgs = norm_msgs
+
+    if use_decision1 and is_company_docs:
+        from gemini_decision import select_active_company_doc
+
+        q_line = ""
+        notes_section = user_txt_raw
+        if "Query:" in user_txt_raw and "Retrieved Local Markdown Notes:" in user_txt_raw:
+            q_part, notes_section = user_txt_raw.split("Retrieved Local Markdown Notes:", 1)
+            q_line = q_part.replace("Query:", "").strip()
+        raw_chunks = [c.strip() for c in notes_section.strip().split("\n\n---\n\n") if c.strip()]
+        parsed_notes: List[Tuple[str, str, str]] = []
+        for ch in raw_chunks:
+            lines_ch = ch.splitlines()
+            if lines_ch and lines_ch[0].startswith("File: "):
+                fp = lines_ch[0].split("File: ", 1)[1].strip()
+                body_ch = "\n".join(lines_ch[1:])
+                title_ch = lines_ch[1].lstrip("# ").strip() if len(lines_ch) > 1 else fp
+                parsed_notes.append((fp, title_ch, body_ch))
+        if len(parsed_notes) >= 2:
+            d_doc = select_active_company_doc(q_line, parsed_notes)
+            d1_extra_in_tok += d_doc["input_tokens"]
+            d1_extra_cost += d_doc["cost_usd"]
+            d1_extra_elapsed += d_doc["elapsed_s"]
+            chosen_fp = d_doc["active_note"]
+            filtered_chunks = [
+                f"File: {fp}\n{body_ch}"
+                for fp, _, body_ch in parsed_notes
+                if fp == chosen_fp
+            ]
+            if filtered_chunks:
+                routed_msgs = [dict(m) for m in norm_msgs]
+                routed_msgs[-1]["content"] = (
+                    f"Query: {q_line}\n\nRetrieved Local Markdown Notes (Decision-1 Active Selection):\n"
+                    + filtered_chunks[0]
+                )
+    elif use_decision1 and is_voice_cmd:
+        from gemini_decision import classify_voice_command_tool
+
+        utt = user_txt_raw.replace("Spoken Utterance:", "").strip().strip('"')
+        d_voice = classify_voice_command_tool(utt)
+        d1_extra_in_tok += d_voice["input_tokens"]
+        d1_extra_cost += d_voice["cost_usd"]
+        d1_extra_elapsed += d_voice["elapsed_s"]
+        d1_locked_tool = d_voice["tool"]
+        d1_self_corr = bool(d_voice["has_self_correction"])
+        routed_msgs = [dict(m) for m in norm_msgs]
+        routed_msgs[-1]["content"] = (
+            f"{user_txt_raw}\n\n[Verified Decision-1 Tool: {d1_locked_tool} | Self-Correction: {d1_self_corr}]"
+        )
+
     is_complex_voice = (
-        "spoken utterance:" in user_low
+        is_voice_cmd
         and "gemma4" in eff_comms
-        and any(w in user_low for w in ("wait", "sorry", "actually", "instead", "push ", "reschedule"))
+        and (d1_self_corr or any(w in user_low for w in ("wait", "sorry", "actually", "instead", "push ", "reschedule")))
     )
     target_mlx = (
         eff_comms
@@ -1162,20 +1629,28 @@ def route_specialist_completion(
     )
     res = _call_named_model(
         target_mlx,
-        norm_msgs,
+        routed_msgs,
         ollama_base=ollama_base,
         max_tokens=max_tokens,
         temperature=temperature,
         mlx_fn=mlx_fn,
     )
+    if d1_locked_tool:
+        parsed_v = _extract_json_dict(res["content"])
+        if isinstance(parsed_v, dict):
+            parsed_v["tool"] = d1_locked_tool
+            res["content"] = json.dumps(parsed_v)
     if is_code_patch:
         user_txt = user_txt_raw
         res["content"] = _normalize_code_patch(user_txt, res["content"])
         ok1, cur_hint = _check_code_patch_passes_probes(user_txt, res["content"])
         if not ok1:
+            rsi_guardrail = _match_evolved_rsi_guardrail("mlx_coder", user_txt)
+            if rsi_guardrail:
+                cur_hint = f"{cur_hint} [Sovereign RSI Guardrail: {rsi_guardrail}]".strip()
             for cand_coder, use_feedback in (
                 (eff_comms, False),
-                ("qwen2.5-coder:1.5b", True),
+                (eff_coder, True),
                 (eff_comms, True),
             ):
                 retry_msgs = [dict(m) for m in norm_msgs]
@@ -1183,14 +1658,17 @@ def route_specialist_completion(
                     retry_msgs[-1]["content"] = (
                         f"{retry_msgs[-1]['content']}\n\nIMPORTANT SELF-TEST FEEDBACK: {cur_hint}"
                     )
-                retry_res = _call_named_model(
-                    cand_coder,
-                    retry_msgs,
-                    ollama_base=ollama_base,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    mlx_fn=mlx_fn,
-                )
+                try:
+                    retry_res = _call_named_model(
+                        cand_coder,
+                        retry_msgs,
+                        ollama_base=ollama_base,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        mlx_fn=mlx_fn,
+                    )
+                except Exception:
+                    continue
                 retry_res["content"] = _normalize_code_patch(user_txt, retry_res["content"])
                 ok2, hint2 = _check_code_patch_passes_probes(user_txt, retry_res["content"])
                 if ok2:
@@ -1200,20 +1678,34 @@ def route_specialist_completion(
                 if hint2 and use_feedback:
                     cur_hint = f"{cur_hint} Also: {hint2}"
 
+    tot_mlx_elapsed = round(float(res["elapsed_s"]) + d1_extra_elapsed, 3)
+    backend_tag = f"gemini-decision-1+{res['backend_model']}" if d1_extra_in_tok > 0 else res["backend_model"]
     out_mlx = {
         "content": res["content"],
         "route": "mlx_coder",
-        "backend_model": res["backend_model"],
+        "backend_model": backend_tag,
         "tokens": res["tokens"],
         "tok_per_s": res["tok_per_s"],
-        "elapsed_s": res["elapsed_s"],
+        "elapsed_s": tot_mlx_elapsed,
+        "decision_api_usage": (
+            {
+                "input_tokens": d1_extra_in_tok,
+                "output_tokens": 0,
+                "cost_usd": round(d1_extra_cost, 8),
+            }
+            if d1_extra_in_tok > 0
+            else None
+        ),
     }
     record_router_telemetry(
         route=out_mlx["route"],
         backend_model=out_mlx["backend_model"],
         tokens=int(out_mlx["tokens"]),
         elapsed_s=float(out_mlx["elapsed_s"]),
-        tier="tier_1_5_local_specialist",
+        tier="tier_1_5_cloud_decision" if d1_extra_in_tok > 0 else "tier_1_5_local_specialist",
+        prompt_tokens=d1_extra_in_tok,
+        decision_input_tokens=d1_extra_in_tok,
+        decision_cost_usd=round(d1_extra_cost, 8),
     )
     return out_mlx
 

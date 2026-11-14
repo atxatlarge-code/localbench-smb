@@ -2,5 +2,9 @@ __pycache__/
 *.py[cod]
 .DS_Store
 .venv/
+.env
+.env.*
 results/router_telemetry_ledger.json
+results/*_smoke.json
+results/zmail_inbox_edge_cases.json
 datasets/localbench_smb_private.jsonl
